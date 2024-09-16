@@ -4,35 +4,84 @@
     <meta chrset="utf-8">
     <title>tja-Analyser</title>
     <style>
+        #tjatable{
+            width:100%;
+            border-collapse:separate;
+            border-spacing:10px;
+        }
         #tja{
             width:100%;
         }
+        #tjaFiletd{
+            border:3px dashed #dddddd;
+            text-align:center;
+        }
+        #tjaFile{
+            margin-top:10px;
+            /*background:#11bbff;
+            color:#ffffff;*/
+            font-weight:bold;
+            font-size:15px;
+            /*font-size:20px;
+            width:8em;
+            height:2.5em;*/
+            border:none;
+        }
+        /*#tjaFile:hover{*/
+            /*background:#1177bb;*/
+        /*}*/
         #start{
-            font-size:1.5em;
+            display:block;
+            background:#ee2211;
+            color:#ffffff;
+            font-size:20px;
+            font-weight:bold;
+            font-size:20px;
             width:5em;
-            height:1.5em;
+            height:2.5em;
+            border:none;
+            margin:0 auto;
         }
-        table{
+        #start:hover{
+            background:#991100;
+        }
+        #result{
             border-collapse:collapse;
+            /*text-align:center;*/
+            margin:0 auto;
         }
-        table tr td{
+        #result tr td{
             border:2px solid black;
             border-collapse:collapse;
             padding:10px;
+        }
+        #result tr td:nth-of-type(1){
+            text-align:right;
+            font-weight:bold;
+            background-color:#dddddd;
         }
     </style>
 </head>
 <body>
     <h1>TJA-Analyser</h1>
-    <h2>注意事項</h2>
-    <ul>
-        <li>#STARTと#ENDの間のみ記述してください</li>
-        <li>最初に#BPMCHANGEで初期BPMを記述してください</li>
-    </ul>
-    <textarea id="tja" rows="15"></textarea>
+    <h2>使い方</h2>
+    <p>
+        左のテキストボックスにtja譜面をコピペするか<br>
+        右のボックスにtjaファイルをドラッグ&ドロップもしくは<br>
+        ファイルを選択ボタンでtjaファイルを指定してください<br>
+    </p>
+    連打速度(/s):<input id="rollSpeed" type="number">
+    <table id="tjatable">
+        <tr>
+            <td id="tjatd"><textarea id="tja" rows="12"></textarea></td>
+            <td id="tjaFiletd">
+                またはtjaファイルを選択<br><input type="file" id="tjaFile" accept=".tja" /></span>
+            </td>
+        </tr>
+    </table>
     <button id="start" onclick="start()">分析</button>
     <hr>
-    <table>
+    <table id="result">
         <tr><td>コンボ数</td><td><span id="combo">1000</span></td></tr>
         <tr><td>演奏時間</td><td><span id="time">2:00</span></td></tr>
         <tr><td>平均密度</td><td><span id="density">8.33</span>打/s</td></tr>
@@ -44,10 +93,17 @@
         <tr><td>大音符割合</td><td><span id="bigRatio">5</span>%</td></tr>
         <tr><td>連打秒数(個別)</td><td><span id="rollTimeIndivi">4.000, 2.000, 3.000</span></td></tr>
         <tr><td>連打秒数</td><td><span id="rollTime">9.000</span></td></tr>
+        <tr><td>推定連打数</td><td><span id="rollCnt">120</span></td></tr>
     </table>
     <script>
+        
         // HTMLオブジェクト紐付け
         const tjaObj = document.getElementById("tja");
+        const tjaAreaObj = document.getElementById("tjaFiletd");
+        const tjaBtObj = document.getElementById("tjaFile");
+
+        const rollSpeedObj = document.getElementById("rollSpeed");
+
         const comboObj = document.getElementById("combo");
         const timeObj = document.getElementById("time");
         const densityObj = document.getElementById("density");
@@ -59,12 +115,38 @@
         const bigRatioObj = document.getElementById("bigRatio");
         const rollTimeIndiviObj = document.getElementById("rollTimeIndivi");
         const rollTimeObj = document.getElementById("rollTime");
+        const rollCntObj = document.getElementById("rollCnt");
 
         const tjaCommand = ["MEASURE", "BPMCHANGE"]; // 数値が後ろに来て有効なコマンド
+        var tja;
+        
+        function tjaLoad(file){
+            var reader = new FileReader();
+            reader.readAsText(file);
+            reader.onload = function(event){
+                tjaObj.value = reader.result;
+            };
+        };
+        tjaAreaObj.addEventListener("dragover", function(event){ // tjaファイルがエリア内にドラッグされたとき
+            event.preventDefault();
+        });
+        tjaAreaObj.addEventListener("drop", function(event){ // tjaファイルがエリア内にドロップされたとき
+            event.preventDefault(); // ドロップされたときの本来の挙動「ファイルをコピー」を阻止？
+            var file = event.dataTransfer.files[0];
+            tjaLoad(file);
+        });
+        tjaBtObj.addEventListener("change", function(event){
+            var file = event.target.files[0];
+            tjaLoad(file);
+        });
+
+
         function start(){
             try{
             tja = tjaObj.value;
             tjaArr = tja.split("\n");
+            tjaPhase = 0; // 0のとき楽曲情報 1のとき譜面情報
+            tjaFlag = 0;
             currMeasure = 1; // 拍子初期値 4/4
             currBPM = 200; //BPM初期値 200
             var currBarLength; // 小節内数字数
@@ -77,93 +159,110 @@
             currRollTime = -1; // 連打時間(-1なら非連打状態)
             rollTime = new Array(); // 連打時間(個別)
             rollTimeTotal = 0; // 連打時間(合計)
+            balloonValue = new Array();
+            rollCnt = 0;
             notesCnt = 0; // 最大コンボ数
             dongCnt = 0; // 面個数
             bigCnt = 0; // 大音符個数
             for(i=0; i<tjaArr.length; i++){
-                if(tjaArr[i].charAt(0) == "#"){ // コマンド行処理
-                    j = 1;
-                    commandName = "";
-                    while(tjaArr[i].charAt(j) != " " && j < tjaArr[i].length + 1){
-                        commandName = commandName + tjaArr[i].charAt(j);
-                        j++;
+                if(tjaFlag == 1){
+                    break;
+                };
+                if(tjaPhase == 0){
+                    if(tjaArr[i].substr(0, 4) == "BPM:"){ // BPM行検出
+                        currBPM = tjaArr[i].substr(4, tjaArr[i].length - 4);
+                    }else if(tjaArr[i].substr(0, 8) == "BALLOON:"){ // BALLOON行検出
+                        balloonValue = tjaArr[i].substr(8, tjaArr[i].length - 8).split(",");
+                    }else if(tjaArr[i].substr(0, 6) == "#START"){ // #START
+                        tjaPhase = 1;
                     };
-                    if(tjaCommand.includes(commandName) == true){
-                        j++;
-                        commandIndex = "";
-                        while(j < tjaArr[i].length + 1){
-                            commandIndex = commandIndex + tjaArr[i].charAt(j);
+                }else{
+                    if(tjaArr[i].charAt(0) == "#"){ // コマンド行処理
+                        j = 1;
+                        commandName = "";
+                        while(tjaArr[i].charAt(j) != " " && j < tjaArr[i].length){
+                            commandName = commandName + tjaArr[i].charAt(j);
                             j++;
                         };
-                        if(commandName == "MEASURE"){
-                            currMeasureArr = commandIndex.split("/");
-                            currMeasure = Number(currMeasureArr[0]) / Number(currMeasureArr[1]);
-                        }else if(commandName == "BPMCHANGE"){
-                            currBPM = Number(commandIndex);
+                        if(commandName == "END"){
+                            tjaFlag = 1;
+                        }else if(tjaCommand.includes(commandName) == true){
+                            j++;
+                            commandIndex = "";
+                            while(j < tjaArr[i].length + 1){
+                                commandIndex = commandIndex + tjaArr[i].charAt(j);
+                                j++;
+                            };
+                            if(commandName == "MEASURE"){
+                                currMeasureArr = commandIndex.split("/");
+                                currMeasure = Number(currMeasureArr[0]) / Number(currMeasureArr[1]);
+                            }else if(commandName == "BPMCHANGE"){
+                                currBPM = Number(commandIndex);
+                            };
                         };
-                    };
-                }else if(tjaArr[i].charAt(0) == "/"){ // コメント行処理
-                }else{ // 譜面データ行処理
-                    for(j=0; j<tjaArr[i].length; j++){
-                        if(tjaArr[i].charAt(j) == ","){ // 小節処理
-                            barCnt++;
-                            currBarLength = currBar.length; // 小節文字数
-                            currBarTime = (60 / currBPM) * currMeasure * 4; // 小節長さ(s)
-                            time += currBarTime;
-                            if(currBarLength == 0){ // 空小節
-                                outroTime += currBarTime;
-                                if(currRollTime >= 0){ // 連打中
-                                    currRollTime += currBarTime;
-                                };
-                                if(notesCnt == 0){
-                                    introTime += currBarTime;
-                                };
-                            }else{
-                                for(k=0; k<currBar.length; k++){
-                                    if(currBar.charAt(k) == "0"){
-                                        if(currRollTime >= 0){ // 連打中
-                                            currRollTime += currBarTime / currBarLength;
-                                        };
-                                    }else if(currBar.charAt(k) == "1"){ // 面
-                                        notesCnt++;
-                                        dongCnt++;
-                                        outroTime = 0;
-                                    }else if(currBar.charAt(k) == "2"){ // 縁
-                                        notesCnt++;
-                                        outroTime = 0;
-                                    }else if(currBar.charAt(k) == "3"){ // 面(大)
-                                        notesCnt++;
-                                        dongCnt++;
-                                        bigCnt++;
-                                        outroTime = 0;
-                                    }else if(currBar.charAt(k) == "4"){ // 縁(大)
-                                        notesCnt++;
-                                        bigCnt++;
-                                        outroTime = 0;
-                                    }else if(currBar.charAt(k) == "5"){ // 連打
-                                        currRollTime = currBarTime / currBarLength;                                       
-                                    }else if(currBar.charAt(k) == "6"){ // 連打(大)
-                                        currRollTime = currBarTime / currBarLength;                                       
-                                    }else if(currBar.charAt(k) == "7"){ // 連打(風船)
-                                        currRollTime = -2;
-                                    }else if(currBar.charAt(k) == "8"){ // 連打(終)
-                                        if(currRollTime > 0){
-                                            rollTime.push(currRollTime);
-                                        };
-                                        currRollTime = -1;
+                    }else if(tjaArr[i].charAt(0) == "/"){ // コメント行処理
+                    }else{ // 譜面データ行処理
+                        for(j=0; j<tjaArr[i].length; j++){
+                            if(tjaArr[i].charAt(j) == ","){ // 小節処理
+                                barCnt++;
+                                currBarLength = currBar.length; // 小節文字数
+                                currBarTime = (60 / currBPM) * currMeasure * 4; // 小節長さ(s)
+                                time += currBarTime;
+                                if(currBarLength == 0){ // 空小節
+                                    outroTime += currBarTime;
+                                    if(currRollTime >= 0){ // 連打中
+                                        currRollTime += currBarTime;
                                     };
                                     if(notesCnt == 0){
-                                        introTime += currBarTime / currBarLength;
+                                        introTime += currBarTime;
                                     };
-                                    outroTime += currBarTime / currBarLength;
+                                }else{
+                                    for(k=0; k<currBar.length; k++){
+                                        if(currBar.charAt(k) == "0"){
+                                            if(currRollTime >= 0){ // 連打中
+                                                currRollTime += currBarTime / currBarLength;
+                                            };
+                                        }else if(currBar.charAt(k) == "1"){ // 面
+                                            notesCnt++;
+                                            dongCnt++;
+                                            outroTime = 0;
+                                        }else if(currBar.charAt(k) == "2"){ // 縁
+                                            notesCnt++;
+                                            outroTime = 0;
+                                        }else if(currBar.charAt(k) == "3"){ // 面(大)
+                                            notesCnt++;
+                                            dongCnt++;
+                                            bigCnt++;
+                                            outroTime = 0;
+                                        }else if(currBar.charAt(k) == "4"){ // 縁(大)
+                                            notesCnt++;
+                                            bigCnt++;
+                                            outroTime = 0;
+                                        }else if(currBar.charAt(k) == "5"){ // 連打
+                                            currRollTime = currBarTime / currBarLength;                                       
+                                        }else if(currBar.charAt(k) == "6"){ // 連打(大)
+                                            currRollTime = currBarTime / currBarLength;                                       
+                                        }else if(currBar.charAt(k) == "7"){ // 連打(風船)
+                                            currRollTime = -2;
+                                        }else if(currBar.charAt(k) == "8"){ // 連打(終)
+                                            if(currRollTime > 0){
+                                                rollTime.push(currRollTime);
+                                            };
+                                            currRollTime = -1;
+                                        };
+                                        if(notesCnt == 0){
+                                            introTime += currBarTime / currBarLength;
+                                        };
+                                        outroTime += currBarTime / currBarLength;
+                                    };
                                 };
+                                currBar = "";
+                            }else if(tjaArr[i].charAt(j) == "/"){ // コメント処理
+                                break;
+                            }else if(tjaArr[i].charAt(j) == " "){ // 空白処理
+                            }else{
+                                currBar = currBar + tjaArr[i].charAt(j);
                             };
-                            currBar = "";
-                        }else if(tjaArr[i].charAt(j) == "/"){ // コメント処理
-                            break;
-                        }else if(tjaArr[i].charAt(j) == " "){ // 空白処理
-                        }else{
-                            currBar = currBar + tjaArr[i].charAt(j);
                         };
                     };
                 };
@@ -196,6 +295,11 @@
             rollTimeTotal = Math.floor(rollTimeTotal * 1000) / 1000;
             rollTimeIndiviObj.innerText = dispRollTime;
             rollTimeObj.innerText = rollTimeTotal;
+            rollCnt = Math.floor(rollTimeTotal * rollSpeedObj.value);
+            for(i=0; i<balloonValue.length; i++){
+                rollCnt += Number(balloonValue[i]);
+            };
+            rollCntObj.innerText = rollCnt;
             }catch(e){alert(e)};
         };
     </script>
